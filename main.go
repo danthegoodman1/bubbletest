@@ -85,20 +85,20 @@ func (m Model) CalculateLayout() Layout {
 
 		// Calculate left pane dimensions
 		leftPaneRenderedWidth := min(MaxLeftPaneWidth, layout.TerminalWidth/4)
-		layout.LeftPaneWidth = leftPaneRenderedWidth - BorderWidth + 1 // Add 1 to fix width issue
-		layout.LeftPaneHeight = availableHeight - BorderWidth          // Subtract border height since lipgloss adds it
-		layout.ListWidth = layout.LeftPaneWidth - BorderWidth
+		layout.LeftPaneWidth = leftPaneRenderedWidth - BorderWidth
+		layout.LeftPaneHeight = availableHeight - BorderWidth // Subtract border height since lipgloss adds it
+		layout.ListWidth = layout.LeftPaneWidth
 		layout.ListHeight = layout.LeftPaneHeight - BorderWidth
 
 		// Calculate right pane dimensions
-		layout.RightPaneWidth = layout.TerminalWidth - leftPaneRenderedWidth - PaneSpacing - BorderWidth + 1 // Add 1 base width fix
-		layout.RightPaneHeight = availableHeight - BorderWidth                                               // Subtract border height since lipgloss adds it
+		layout.RightPaneWidth = layout.TerminalWidth - leftPaneRenderedWidth - PaneSpacing - BorderWidth
+		layout.RightPaneHeight = availableHeight - BorderWidth // Subtract border height since lipgloss adds it
 
 		// Calculate viewport dimensions within right pane
-		layout.ViewportWidth = layout.RightPaneWidth - BorderWidth
+		layout.ViewportWidth = layout.RightPaneWidth
 
 		if layout.HasContentHeader {
-			layout.ViewportHeight = layout.RightPaneHeight - ContentHeaderHeight + 1
+			layout.ViewportHeight = layout.RightPaneHeight - ContentHeaderHeight + 1 // Add 1 back because we already subtracted one for the border
 		} else {
 			layout.ViewportHeight = layout.RightPaneHeight - BorderWidth
 		}
