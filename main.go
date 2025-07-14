@@ -78,10 +78,11 @@ func initialModel() Model {
 
 	// Setup list
 	l := list.New(files, list.NewDefaultDelegate(), 0, 0)
-	l.Title = "Files"
+	l.Title = formatDirectoryPath(currentDir)
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(false)
 	l.SetShowHelp(false)
+	setListTitleStyle(&l)
 
 	// Setup viewport
 	vp := viewport.New(0, 0)
@@ -110,6 +111,29 @@ func initialModel() Model {
 		showLineNumbers:  true,
 		currentFilePath:  "",
 	}
+}
+
+// setListTitleStyle applies consistent styling to the list title
+func setListTitleStyle(l *list.Model) {
+	l.Styles.Title = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("250")).
+		Background(lipgloss.Color("235")).
+		Padding(0, 1).
+		MarginBottom(1)
+}
+
+// formatDirectoryPath formats a directory path with ~ substitution for home directory
+func formatDirectoryPath(path string) string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+
+	if strings.HasPrefix(path, homeDir) {
+		return strings.Replace(path, homeDir, "~", 1)
+	}
+
+	return path
 }
 
 // Get list of files in directory
@@ -310,6 +334,8 @@ func (m Model) goToPreviousDirectory() (tea.Model, tea.Cmd) {
 	m.currentDir = prevDir
 	files := getFileList(m.currentDir)
 	m.list.SetItems(files)
+	m.list.Title = formatDirectoryPath(m.currentDir)
+	setListTitleStyle(&m.list)
 	m.list.Select(0)
 	m.viewport.SetContent("Select a file to view its content")
 	m.fileContent = ""
@@ -362,6 +388,8 @@ func (m Model) handleFileSelection() (tea.Model, tea.Cmd) {
 		m.currentDir = fileItem.path
 		files := getFileList(m.currentDir)
 		m.list.SetItems(files)
+		m.list.Title = formatDirectoryPath(m.currentDir)
+		setListTitleStyle(&m.list)
 		m.list.Select(0)
 		m.viewport.SetContent("Select a file to view its content")
 		m.fileContent = ""
