@@ -7,12 +7,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wordwrap"
 )
 
 // Pane represents which pane is currently active or being hovered
@@ -196,7 +198,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		helpHeight := 1
 
 		if m.isFullscreen {
-			m.viewport.Width = m.width
+			// In fullscreen mode, use most of the terminal width
+			m.viewport.Width = m.width - 4 // Small buffer for terminal rendering
+			debugLog("Fullscreen mode - Terminal width: %d, Viewport width set to: %d", m.width, m.viewport.Width)
 			if m.currentFilePath != "" {
 				// Account for help text + content header (3 lines)
 				m.viewport.Height = m.height - helpHeight - 3 // 3 for header
@@ -207,10 +211,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			// Calculate pane widths for normal mode
 			leftWidth := min(40, m.width/4)
-			rightWidth := m.width - leftWidth - 4 // Account for borders
-			if m.currentFilePath != "" {
-				rightWidth -= 4 // Make right pane 4 characters shorter when file is active
-			}
+			rightWidth := m.width - leftWidth - 2 // Account for spacing between panes
 			paneHeight := m.height - helpHeight
 
 			// Update list size
@@ -219,14 +220,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Update viewport size based on whether we have a header
 			if m.currentFilePath != "" {
-				// With header: account for header height and make width 4 characters shorter
-				m.viewport.Width = rightWidth - 8  // Account for border (2px) + padding (2px) + 4 extra for file
+				// With header: account for border (2px) + padding (2px)
+				m.viewport.Width = rightWidth - 4  // Account for border (2px) + padding (2px)
 				m.viewport.Height = paneHeight - 3 // Account for border + padding + header
 			} else {
 				// Without header: normal calculation
 				m.viewport.Width = rightWidth - 4  // Account for border (2px) + padding (2px)
 				m.viewport.Height = paneHeight - 4 // Account for border (2px) + padding (2px)
 			}
+		}
+
+		// Re-render current file content if viewport width changed
+		if m.currentFilePath != "" {
+			return m.rerenderCurrentFile()
 		}
 
 		return m, nil
@@ -251,6 +257,24 @@ func (m Model) handleNavigatorMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.isFullscreen {
 			// Exit fullscreen mode
 			m.isFullscreen = false
+			// Reset viewport dimensions to normal pane size
+			helpHeight := 1
+			leftWidth := min(40, m.width/4)
+			rightWidth := m.width - leftWidth - 2
+			paneHeight := m.height - helpHeight
+
+			if m.currentFilePath != "" {
+				m.viewport.Width = rightWidth - 4
+				m.viewport.Height = paneHeight - 3
+			} else {
+				m.viewport.Width = rightWidth - 4
+				m.viewport.Height = paneHeight - 4
+			}
+			debugLog("ESC exiting fullscreen - Setting viewport width to: %d", m.viewport.Width)
+			// Re-render the current file content with the new viewport width
+			if m.currentFilePath != "" {
+				return m.rerenderCurrentFile()
+			}
 			return m, nil
 		}
 		// Enter pane selection mode
@@ -258,7 +282,7 @@ func (m Model) handleNavigatorMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selectedPane = m.focusedPane
 		return m, nil
 	case "left":
-		// Switch focus to navigator pane when on content pane
+		// Switch focus to navigator pane when on content pane (only if wrapping is enabled)
 		if m.focusedPane == ContentPane {
 			m.focusedPane = NavigatorPane
 			return m, nil
@@ -274,15 +298,36 @@ func (m Model) handleNavigatorMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Toggle fullscreen only for content pane when focused
 		if m.focusedPane == ContentPane {
 			m.isFullscreen = !m.isFullscreen
-			// Update viewport dimensions for fullscreen mode
+			debugLog("Fullscreen toggled to: %v", m.isFullscreen)
+			// Update viewport dimensions based on fullscreen mode
 			helpHeight := 1
 			if m.isFullscreen {
-				m.viewport.Width = m.width
+				// Entering fullscreen mode
+				m.viewport.Width = m.width - 4 // Small buffer for terminal rendering
+				debugLog("Fullscreen toggle - Terminal width: %d, Setting viewport width to: %d", m.width, m.viewport.Width)
 				if m.currentFilePath != "" {
 					m.viewport.Height = m.height - helpHeight - 3 // 3 for header
 				} else {
 					m.viewport.Height = m.height - helpHeight + 1
 				}
+			} else {
+				// Exiting fullscreen mode - reset to normal pane dimensions
+				leftWidth := min(40, m.width/4)
+				rightWidth := m.width - leftWidth - 2
+				paneHeight := m.height - helpHeight
+
+				if m.currentFilePath != "" {
+					m.viewport.Width = rightWidth - 4
+					m.viewport.Height = paneHeight - 3
+				} else {
+					m.viewport.Width = rightWidth - 4
+					m.viewport.Height = paneHeight - 4
+				}
+				debugLog("Exiting fullscreen - Setting viewport width to: %d", m.viewport.Width)
+			}
+			// Re-render the current file content with the new viewport width
+			if m.currentFilePath != "" {
+				return m.rerenderCurrentFile()
 			}
 		}
 		return m, nil
@@ -369,19 +414,37 @@ func (m Model) rerenderCurrentFile() (tea.Model, tea.Cmd) {
 	} else {
 		rawContent := string(content)
 		filename := filepath.Base(m.currentFilePath)
+
+		debugLog("rerenderCurrentFile - Viewport width: %d, Fullscreen: %v", m.viewport.Width, m.isFullscreen)
+
 		if isMarkdownFile(filename) {
-			// Render markdown with Glamour (no line numbers)
+			// Render markdown with Glamour (no line numbers, no manual wrapping)
 			m.fileContent = m.renderMarkdown(rawContent)
 		} else {
-			// Add line numbers for non-markdown files if enabled
+			// Step 1: Add line numbers if enabled, otherwise use raw content
+			var contentWithLineNumbers string
 			if m.showLineNumbers {
-				m.fileContent = addLineNumbers(rawContent)
+				contentWithLineNumbers = addLineNumbers(rawContent)
 			} else {
-				m.fileContent = rawContent
+				contentWithLineNumbers = rawContent
+			}
+
+			// Step 2: Wrap the final content
+			wrapWidth := m.viewport.Width
+			if wrapWidth > 0 {
+				m.fileContent = wordwrap.String(contentWithLineNumbers, wrapWidth)
+			} else {
+				m.fileContent = contentWithLineNumbers
 			}
 		}
 	}
 	m.viewport.SetContent(m.fileContent)
+
+	// Debug: Check what we're setting
+	lines := strings.Split(m.fileContent, "\n")
+	for i, line := range lines[:min(3, len(lines))] {
+		debugLog("Content line %d: length %d, content: '%.120s'", i+1, len(line), line)
+	}
 
 	return m, nil
 }
@@ -417,15 +480,28 @@ func (m Model) handleFileSelection() (tea.Model, tea.Cmd) {
 			m.fileContent = fmt.Sprintf("Error reading file: %v", err)
 		} else {
 			rawContent := string(content)
-			if isMarkdownFile(fileItem.name) {
-				// Render markdown with Glamour (no line numbers)
+			filename := filepath.Base(fileItem.path)
+
+			debugLog("handleFileSelection - Viewport width: %d", m.viewport.Width)
+
+			if isMarkdownFile(filename) {
+				// Render markdown with Glamour (no line numbers, no manual wrapping)
 				m.fileContent = m.renderMarkdown(rawContent)
 			} else {
-				// Add line numbers for non-markdown files if enabled
+				// Step 1: Add line numbers if enabled, otherwise use raw content
+				var contentWithLineNumbers string
 				if m.showLineNumbers {
-					m.fileContent = addLineNumbers(rawContent)
+					contentWithLineNumbers = addLineNumbers(rawContent)
 				} else {
-					m.fileContent = rawContent
+					contentWithLineNumbers = rawContent
+				}
+
+				// Step 2: Wrap the final content
+				wrapWidth := m.viewport.Width
+				if wrapWidth > 0 {
+					m.fileContent = wordwrap.String(contentWithLineNumbers, wrapWidth)
+				} else {
+					m.fileContent = contentWithLineNumbers
 				}
 			}
 		}
@@ -460,9 +536,12 @@ func (m Model) getContentHeaderView(width int, borderColor lipgloss.Color) strin
 	}()
 
 	titleRendered := titleStyle.Render(title)
+
 	// Style the line with the same border color
 	lineStyle := lipgloss.NewStyle().Foreground(borderColor)
-	line := lineStyle.Render(strings.Repeat("─", max(0, width-lipgloss.Width(titleRendered))-2))
+	lineWidth := max(0, width-lipgloss.Width(titleRendered)) - 2
+
+	line := lineStyle.Render(strings.Repeat("─", lineWidth))
 	return lipgloss.JoinHorizontal(
 		lipgloss.Center,
 		lineStyle.Render("╭\n│"),
@@ -491,10 +570,10 @@ func (m Model) getContentHeaderViewFullscreen(width int) string {
 	titleRendered := titleStyle.Render(title)
 	// Style the line with the same border color
 	lineStyle := lipgloss.NewStyle()
-	line := lineStyle.Render(strings.Repeat("─", max(0, width-lipgloss.Width(titleRendered))-3))
+	line := lineStyle.Render(strings.Repeat("─", max(0, width-lipgloss.Width(titleRendered))-1))
 	return lipgloss.JoinHorizontal(
 		lipgloss.Center,
-		lineStyle.Render(strings.Repeat("─", 2)),
+		lineStyle.Render(strings.Repeat("─", 1)),
 		titleRendered,
 		line,
 	)
@@ -511,7 +590,9 @@ func (m Model) View() string {
 
 	// Handle fullscreen mode for content pane
 	if m.isFullscreen {
-		contentHeader := m.getContentHeaderViewFullscreen(m.width) // Green for focused content pane
+		debugLog("Fullscreen rendering - Terminal width: %d, Viewport width: %d", m.width, m.viewport.Width)
+
+		contentHeader := m.getContentHeaderViewFullscreen(m.width)
 		if contentHeader != "" {
 			return helpText + "\n" + contentHeader + "\n" + m.viewport.View()
 		} else {
@@ -521,10 +602,7 @@ func (m Model) View() string {
 
 	// Calculate pane widths for normal mode
 	leftWidth := min(40, m.width/4)
-	rightWidth := m.width - leftWidth - 4 // Account for borders
-	if m.currentFilePath != "" {
-		rightWidth -= 4 // Make right pane 4 characters shorter when file is active
-	}
+	rightWidth := m.width - leftWidth - 2 // Account for spacing between panes
 	paneHeight := m.height - helpHeight
 
 	// Style the left pane (navigator)
@@ -587,7 +665,7 @@ func (m Model) View() string {
 	} else {
 		// No header, use normal border
 		rightPane = rightStyle.
-			Width(rightWidth).
+			Width(rightWidth - 2).
 			Height(paneHeight - 2).
 			Padding(1).
 			Render(m.viewport.View())
@@ -614,50 +692,61 @@ func max(a, b int) int {
 	return b
 }
 
-// addLineNumbers adds line numbers to the content
-func addLineNumbers(content string) string {
-	lines := strings.Split(content, "\n")
-	if len(lines) == 0 {
-		return content
-	}
-
-	// Calculate the width needed for line numbers
-	maxLineNum := len(lines)
-	lineNumWidth := len(strconv.Itoa(maxLineNum))
-
-	var result strings.Builder
-	for i, line := range lines {
-		lineNum := i + 1
-		// Format line number with padding
-		lineNumStr := fmt.Sprintf("%*d", lineNumWidth, lineNum)
-		result.WriteString(fmt.Sprintf("%s │ %s", lineNumStr, line))
-		if i < len(lines)-1 {
-			result.WriteString("\n")
-		}
-	}
-
-	return result.String()
-}
-
 // isMarkdownFile checks if a file is a markdown file based on extension
 func isMarkdownFile(filename string) bool {
 	ext := strings.ToLower(filepath.Ext(filename))
 	return ext == ".md" || ext == ".markdown"
 }
 
-// renderMarkdown renders markdown content using the pre-created Glamour renderer
+// renderMarkdown renders markdown content using Glamour with proper width
 func (m Model) renderMarkdown(content string) string {
-	if m.markdownRenderer == nil {
-		// Fall back to raw content if no renderer is available
+	// Create a new renderer with the current viewport width for proper wrapping
+	debugLog("renderMarkdown - Using viewport width: %d for markdown rendering", m.viewport.Width)
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(m.viewport.Width),
+	)
+	if err != nil {
+		// Fall back to raw content if rendering fails
 		return content
 	}
 
-	rendered, err := m.markdownRenderer.Render(content)
+	rendered, err := renderer.Render(content)
 	if err != nil {
 		return content // Fall back to raw content if rendering fails
 	}
 
 	return rendered
+}
+
+// addLineNumbers adds simple line numbers to content without any wrapping logic
+func addLineNumbers(originalContent string) string {
+	originalLines := strings.Split(originalContent, "\n")
+
+	if len(originalLines) == 0 {
+		return originalContent
+	}
+
+	// Calculate the width needed for line numbers
+	maxLineNum := len(originalLines)
+	lineNumWidth := len(strconv.Itoa(maxLineNum))
+
+	var result strings.Builder
+
+	// Process each original line individually
+	for lineNum, originalLine := range originalLines {
+		// Add line number to each line
+		lineNumStr := fmt.Sprintf("%*d", lineNumWidth, lineNum+1)
+		lineWithNumber := fmt.Sprintf("%s │ %s", lineNumStr, originalLine)
+		result.WriteString(lineWithNumber)
+
+		// Add newline except for the last line
+		if lineNum < len(originalLines)-1 {
+			result.WriteString("\n")
+		}
+	}
+
+	return result.String()
 }
 
 func (m Model) getHelpText() string {
@@ -699,6 +788,19 @@ func (m Model) getHelpText() string {
 	}
 
 	return " " + strings.Join(hints, "    ") // 4 spaces between items
+}
+
+// debugLog writes debug information to a file
+func debugLog(format string, args ...interface{}) {
+	f, err := os.OpenFile("debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	timestamp := time.Now().Format("15:04:05.000")
+	message := fmt.Sprintf(format, args...)
+	f.WriteString(fmt.Sprintf("[%s] %s\n", timestamp, message))
 }
 
 func main() {
