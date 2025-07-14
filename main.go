@@ -61,6 +61,8 @@ type Model struct {
 	fileContent      string
 	isFullscreen     bool
 	markdownRenderer *glamour.TermRenderer
+	showLineNumbers  bool
+	currentFilePath  string
 }
 
 // Initialize the model
@@ -105,6 +107,8 @@ func initialModel() Model {
 		fileContent:      "",
 		isFullscreen:     false,
 		markdownRenderer: markdownRenderer,
+		showLineNumbers:  true,
+		currentFilePath:  "",
 	}
 }
 
@@ -175,22 +179,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
+		helpHeight := 2 // Help text line + padding line
+
 		if m.isFullscreen {
-			// In fullscreen mode, the content pane takes the full screen
+			// In fullscreen mode, the content pane takes the full screen minus help
 			m.viewport.Width = m.width
-			m.viewport.Height = m.height
+			m.viewport.Height = m.height - helpHeight
 		} else {
 			// Calculate pane widths for normal mode
 			leftWidth := min(40, m.width/4)
 			rightWidth := m.width - leftWidth - 4 // Account for borders
+			paneHeight := m.height - helpHeight
 
 			// Update list size
 			m.list.SetWidth(leftWidth - 2) // Account for border
-			m.list.SetHeight(m.height - 2)
+			m.list.SetHeight(paneHeight - 2)
 
 			// Update viewport size
-			m.viewport.Width = rightWidth - 4 // Account for border (2px) + padding (2px)
-			m.viewport.Height = m.height - 4  // Account for border (2px) + padding (2px)
+			m.viewport.Width = rightWidth - 4  // Account for border (2px) + padding (2px)
+			m.viewport.Height = paneHeight - 4 // Account for border (2px) + padding (2px)
 		}
 
 		return m, nil
@@ -221,6 +228,19 @@ func (m Model) handleNavigatorMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = PaneSelectionMode
 		m.selectedPane = m.focusedPane
 		return m, nil
+	case "left":
+		// Switch focus to navigator pane when on content pane
+		if m.focusedPane == ContentPane {
+			m.focusedPane = NavigatorPane
+			return m, nil
+		}
+	case "l":
+		// Toggle line numbers when focused on content pane
+		if m.focusedPane == ContentPane {
+			m.showLineNumbers = !m.showLineNumbers
+			return m.rerenderCurrentFile()
+		}
+		return m, nil
 	case "f":
 		// Toggle fullscreen only for content pane when focused
 		if m.focusedPane == ContentPane {
@@ -239,15 +259,13 @@ func (m Model) handleNavigatorMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Handle list navigation when navigator is focused
-	if m.focusedPane == NavigatorPane {
+	// Handle navigation based on focused pane
+	switch m.focusedPane {
+	case NavigatorPane:
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(msg)
 		return m, cmd
-	}
-
-	// Handle viewport navigation when content is focused
-	if m.focusedPane == ContentPane {
+	case ContentPane:
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
 		return m, cmd
@@ -299,6 +317,35 @@ func (m Model) goToPreviousDirectory() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) rerenderCurrentFile() (tea.Model, tea.Cmd) {
+	if m.currentFilePath == "" {
+		return m, nil
+	}
+
+	// Read file content
+	content, err := os.ReadFile(m.currentFilePath)
+	if err != nil {
+		m.fileContent = fmt.Sprintf("Error reading file: %v", err)
+	} else {
+		rawContent := string(content)
+		filename := filepath.Base(m.currentFilePath)
+		if isMarkdownFile(filename) {
+			// Render markdown with Glamour (no line numbers)
+			m.fileContent = m.renderMarkdown(rawContent)
+		} else {
+			// Add line numbers for non-markdown files if enabled
+			if m.showLineNumbers {
+				m.fileContent = addLineNumbers(rawContent)
+			} else {
+				m.fileContent = rawContent
+			}
+		}
+	}
+	m.viewport.SetContent(m.fileContent)
+
+	return m, nil
+}
+
 func (m Model) handleFileSelection() (tea.Model, tea.Cmd) {
 	selectedItem := m.list.SelectedItem()
 	if selectedItem == nil {
@@ -318,7 +365,11 @@ func (m Model) handleFileSelection() (tea.Model, tea.Cmd) {
 		m.list.Select(0)
 		m.viewport.SetContent("Select a file to view its content")
 		m.fileContent = ""
+		m.currentFilePath = ""
 	} else {
+		// Store current file path
+		m.currentFilePath = fileItem.path
+
 		// Read file content
 		content, err := os.ReadFile(fileItem.path)
 		if err != nil {
@@ -326,11 +377,15 @@ func (m Model) handleFileSelection() (tea.Model, tea.Cmd) {
 		} else {
 			rawContent := string(content)
 			if isMarkdownFile(fileItem.name) {
-				// Render markdown with Glamour
+				// Render markdown with Glamour (no line numbers)
 				m.fileContent = m.renderMarkdown(rawContent)
 			} else {
-				// Add line numbers for non-markdown files
-				m.fileContent = addLineNumbers(rawContent)
+				// Add line numbers for non-markdown files if enabled
+				if m.showLineNumbers {
+					m.fileContent = addLineNumbers(rawContent)
+				} else {
+					m.fileContent = rawContent
+				}
 			}
 		}
 		m.focusedPane = ContentPane
@@ -345,14 +400,19 @@ func (m Model) View() string {
 		return "Loading..."
 	}
 
+	// Generate help text
+	helpText := m.getHelpText()
+	helpHeight := 2 // Help text line + padding line
+
 	// Handle fullscreen mode for content pane
 	if m.isFullscreen {
-		return m.viewport.View()
+		return helpText + "\n\n" + m.viewport.View()
 	}
 
 	// Calculate pane widths for normal mode
 	leftWidth := min(40, m.width/4)
 	rightWidth := m.width - leftWidth - 4 // Account for borders
+	paneHeight := m.height - helpHeight
 
 	// Style the left pane (navigator)
 	var leftStyle lipgloss.Style
@@ -377,17 +437,20 @@ func (m Model) View() string {
 	// Create the panes
 	leftPane := leftStyle.
 		Width(leftWidth).
-		Height(m.height - 2).
+		Height(paneHeight - 2).
 		Render(m.list.View())
 
 	rightPane := rightStyle.
 		Width(rightWidth).
-		Height(m.height - 2).
+		Height(paneHeight - 2).
 		Padding(1).
 		Render(m.viewport.View())
 
 	// Combine panes horizontally
-	return lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+	panes := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+
+	// Add help text at the top
+	return helpText + "\n" + panes
 }
 
 func min(a, b int) int {
@@ -441,6 +504,47 @@ func (m Model) renderMarkdown(content string) string {
 	}
 
 	return rendered
+}
+
+func (m Model) getHelpText() string {
+	// Style for highlighted keys
+	keyStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("0")).    // Black text
+		Background(lipgloss.Color("#ccc")). // White background
+		Padding(0, 1)                       // Small padding around text
+
+	// Helper function to format key:action pairs
+	formatHint := func(key, action string) string {
+		return keyStyle.Render(key) + ":" + action
+	}
+
+	var hints []string
+
+	// Common controls
+	hints = append(hints, formatHint("q/ctrl+c", "quit"))
+
+	if m.isFullscreen {
+		// Fullscreen mode
+		hints = append(hints, formatHint("f/esc", "exit fullscreen"))
+		if m.focusedPane == ContentPane {
+			hints = append(hints, formatHint("↑↓", "scroll"), formatHint("l", "toggle line numbers"))
+		}
+	} else if m.mode == PaneSelectionMode {
+		// Pane selection mode
+		hints = append(hints, formatHint("←→", "select pane"), formatHint("enter", "focus"), formatHint("esc", "back"))
+	} else {
+		// Normal mode
+		hints = append(hints, formatHint("esc", "pane selection"))
+
+		switch m.focusedPane {
+		case NavigatorPane:
+			hints = append(hints, formatHint("↑↓", "navigate"), formatHint("enter", "select"), formatHint("z", "back"))
+		case ContentPane:
+			hints = append(hints, formatHint("↑↓", "scroll"), formatHint("←", "back to navigator"), formatHint("l", "toggle line numbers"), formatHint("f", "fullscreen"))
+		}
+	}
+
+	return " " + strings.Join(hints, "    ") // 4 spaces between items
 }
 
 func main() {
