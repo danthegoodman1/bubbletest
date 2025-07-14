@@ -835,7 +835,10 @@ func (m Model) getHelpText() string {
 
 		switch m.focusedPane {
 		case NavigatorPane:
-			hints = append(hints, formatHint("↑↓", "navigate"), formatHint("enter", "select"), formatHint("z", "back"))
+			hints = append(hints, formatHint("↑↓", "navigate"), formatHint("enter", "select"))
+			if len(m.directoryHistory) > 0 {
+				hints = append(hints, formatHint("z", "back"))
+			}
 		case ContentPane:
 			hints = append(hints, formatHint("↑↓", "scroll"), formatHint("←", "back to navigator"), formatHint("l", "toggle line numbers"), formatHint("f", "fullscreen"))
 		}
