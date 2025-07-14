@@ -82,7 +82,6 @@ func initialModel() Model {
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(false)
 	l.SetShowHelp(false)
-	setListTitleStyle(&l)
 
 	// Setup viewport
 	vp := viewport.New(0, 0)
@@ -111,15 +110,6 @@ func initialModel() Model {
 		showLineNumbers:  true,
 		currentFilePath:  "",
 	}
-}
-
-// setListTitleStyle applies consistent styling to the list title
-func setListTitleStyle(l *list.Model) {
-	l.Styles.Title = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("250")).
-		Background(lipgloss.Color("235")).
-		Padding(0, 1).
-		MarginBottom(1)
 }
 
 // formatDirectoryPath formats a directory path with ~ substitution for home directory
@@ -203,25 +193,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		helpHeight := 2 // Help text line + padding line
+		helpHeight := 1
 
 		if m.isFullscreen {
-			// In fullscreen mode, the content pane takes the full screen minus help
 			m.viewport.Width = m.width
-			m.viewport.Height = m.height - helpHeight
+			if m.currentFilePath != "" {
+				// Account for help text + content header (2 lines)
+				m.viewport.Height = m.height - helpHeight - 2
+			} else {
+				// Just account for help text
+				m.viewport.Height = m.height - helpHeight + 1
+			}
 		} else {
 			// Calculate pane widths for normal mode
 			leftWidth := min(40, m.width/4)
 			rightWidth := m.width - leftWidth - 4 // Account for borders
+			if m.currentFilePath != "" {
+				rightWidth -= 4 // Make right pane 4 characters shorter when file is active
+			}
 			paneHeight := m.height - helpHeight
 
 			// Update list size
 			m.list.SetWidth(leftWidth - 2) // Account for border
 			m.list.SetHeight(paneHeight - 2)
 
-			// Update viewport size
-			m.viewport.Width = rightWidth - 4  // Account for border (2px) + padding (2px)
-			m.viewport.Height = paneHeight - 4 // Account for border (2px) + padding (2px)
+			// Update viewport size based on whether we have a header
+			if m.currentFilePath != "" {
+				// With header: account for header height and make width 4 characters shorter
+				m.viewport.Width = rightWidth - 8  // Account for border (2px) + padding (2px) + 4 extra for file
+				m.viewport.Height = paneHeight - 7 // Account for border + padding + header + 2 extra
+			} else {
+				// Without header: normal calculation
+				m.viewport.Width = rightWidth - 4  // Account for border (2px) + padding (2px)
+				m.viewport.Height = paneHeight - 4 // Account for border (2px) + padding (2px)
+			}
 		}
 
 		return m, nil
@@ -335,7 +340,6 @@ func (m Model) goToPreviousDirectory() (tea.Model, tea.Cmd) {
 	files := getFileList(m.currentDir)
 	m.list.SetItems(files)
 	m.list.Title = formatDirectoryPath(m.currentDir)
-	setListTitleStyle(&m.list)
 	m.list.Select(0)
 	m.viewport.SetContent("Select a file to view its content")
 	m.fileContent = ""
@@ -389,7 +393,6 @@ func (m Model) handleFileSelection() (tea.Model, tea.Cmd) {
 		files := getFileList(m.currentDir)
 		m.list.SetItems(files)
 		m.list.Title = formatDirectoryPath(m.currentDir)
-		setListTitleStyle(&m.list)
 		m.list.Select(0)
 		m.viewport.SetContent("Select a file to view its content")
 		m.fileContent = ""
@@ -423,6 +426,68 @@ func (m Model) handleFileSelection() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// getContentTitle returns the title for the content pane
+func (m Model) getContentTitle() string {
+	if m.currentFilePath == "" {
+		return ""
+	}
+	return formatDirectoryPath(m.currentFilePath)
+}
+
+// getContentHeaderView creates a header view for the content pane
+func (m Model) getContentHeaderView(width int, borderColor lipgloss.Color) string {
+	title := m.getContentTitle()
+	if title == "" {
+		return ""
+	}
+
+	// Title style with border like pager example, using provided border color
+	titleStyle := func() lipgloss.Style {
+		b := lipgloss.RoundedBorder()
+		b.Right = "├"
+		b.Left = "┤"
+		return lipgloss.NewStyle().BorderStyle(b).BorderForeground(borderColor).Padding(0, 1)
+	}()
+
+	titleRendered := titleStyle.Render(title)
+	// Style the line with the same border color
+	lineStyle := lipgloss.NewStyle().Foreground(borderColor)
+	line := lineStyle.Render(strings.Repeat("─", max(0, width-lipgloss.Width(titleRendered))-2))
+	return lipgloss.JoinHorizontal(
+		lipgloss.Center,
+		lineStyle.Render("╭\n│"),
+		lineStyle.Render(strings.Repeat("─", 2)),
+		titleRendered,
+		line,
+		lineStyle.Render("╮\n│"),
+	)
+}
+
+// getContentHeaderViewFullscreen creates a header view for the content pane in fullscreen mode
+func (m Model) getContentHeaderViewFullscreen(width int) string {
+	title := m.getContentTitle()
+	if title == "" {
+		return ""
+	}
+
+	// Title style with border like pager example, using provided border color
+	titleStyle := func() lipgloss.Style {
+		b := lipgloss.RoundedBorder()
+		b.Right = "├"
+		return lipgloss.NewStyle().BorderStyle(b).Padding(0, 1)
+	}()
+
+	titleRendered := titleStyle.Render(title)
+	// Style the line with the same border color
+	lineStyle := lipgloss.NewStyle()
+	line := lineStyle.Render(strings.Repeat("─", max(0, width-lipgloss.Width(titleRendered))-1))
+	return lipgloss.JoinHorizontal(
+		lipgloss.Center,
+		titleRendered,
+		line,
+	)
+}
+
 func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "Loading..."
@@ -434,12 +499,20 @@ func (m Model) View() string {
 
 	// Handle fullscreen mode for content pane
 	if m.isFullscreen {
-		return helpText + "\n\n" + m.viewport.View()
+		contentHeader := m.getContentHeaderViewFullscreen(m.width) // Green for focused content pane
+		if contentHeader != "" {
+			return helpText + "\n" + contentHeader + "\n" + m.viewport.View()
+		} else {
+			return helpText + "\n" + m.viewport.View()
+		}
 	}
 
 	// Calculate pane widths for normal mode
 	leftWidth := min(40, m.width/4)
 	rightWidth := m.width - leftWidth - 4 // Account for borders
+	if m.currentFilePath != "" {
+		rightWidth -= 4 // Make right pane 4 characters shorter when file is active
+	}
 	paneHeight := m.height - helpHeight
 
 	// Style the left pane (navigator)
@@ -468,13 +541,48 @@ func (m Model) View() string {
 		Height(paneHeight - 2).
 		Render(m.list.View())
 
-	rightPane := rightStyle.
-		Width(rightWidth).
-		Height(paneHeight - 2).
-		Padding(1).
-		Render(m.viewport.View())
+	// Determine border color for content header
+	var headerBorderColor lipgloss.Color
+	if m.mode == PaneSelectionMode && m.selectedPane == ContentPane {
+		headerBorderColor = lipgloss.Color("51") // Cyan
+	} else if m.mode == NavigatorMode && m.focusedPane == ContentPane {
+		headerBorderColor = lipgloss.Color("42") // Green
+	} else {
+		headerBorderColor = lipgloss.Color("240") // White/Gray
+	}
 
-	// Combine panes horizontally
+	// Create content pane manually with integrated header border
+	var rightPane string
+	if m.currentFilePath != "" {
+		// Create header as top border
+		contentHeader := m.getContentHeaderView(rightWidth-2, headerBorderColor)
+
+		// Create sides and bottom border with proper border style
+		b := lipgloss.RoundedBorder()
+		b.Top = ""
+		b.TopLeft = ""
+		b.TopRight = ""
+
+		borderStyle := lipgloss.NewStyle().
+			BorderStyle(b).
+			BorderForeground(headerBorderColor).
+			Width(rightWidth - 2).
+			Height(paneHeight - 4) // Account for header + 2 extra
+			// Padding(1)
+
+		m.viewport.Height = paneHeight - 3
+		contentBody := borderStyle.Render(m.viewport.View())
+		rightPane = contentHeader + contentBody // no newline as contentBody already has a newline
+	} else {
+		// No header, use normal border
+		rightPane = rightStyle.
+			Width(rightWidth).
+			Height(paneHeight - 2).
+			Padding(1).
+			Render(m.viewport.View())
+	}
+
+	// Combine panes
 	panes := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
 
 	// Add help text at the top
@@ -483,6 +591,13 @@ func (m Model) View() string {
 
 func min(a, b int) int {
 	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
 		return a
 	}
 	return b
