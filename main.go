@@ -17,6 +17,96 @@ import (
 	"github.com/muesli/reflow/wordwrap"
 )
 
+// Layout constants - consolidating all magic numbers
+const (
+	// Pane sizing
+	MaxLeftPaneWidth = 40
+	PaneSpacing      = 2
+
+	// Border and padding
+	BorderWidth    = 2
+	PanePadding    = 2
+	ContentPadding = 1
+
+	// Heights
+	HelpTextHeight      = 1
+	ContentHeaderHeight = 3
+
+	// Fullscreen buffer
+	FullscreenBuffer = 4 // Buffer for terminal rendering in fullscreen
+)
+
+// Layout holds all calculated dimensions for the application
+type Layout struct {
+	// Terminal dimensions
+	TerminalWidth  int
+	TerminalHeight int
+
+	// Calculated dimensions
+	LeftPaneWidth   int
+	LeftPaneHeight  int
+	RightPaneWidth  int
+	RightPaneHeight int
+
+	// Viewport dimensions (content area within right pane)
+	ViewportWidth  int
+	ViewportHeight int
+
+	// List dimensions (content area within left pane)
+	ListWidth  int
+	ListHeight int
+
+	// State-dependent flags
+	IsFullscreen     bool
+	HasContentHeader bool
+}
+
+// CalculateLayout computes all layout dimensions based on current state
+func (m Model) CalculateLayout() Layout {
+	layout := Layout{
+		TerminalWidth:    m.width,
+		TerminalHeight:   m.height,
+		IsFullscreen:     m.isFullscreen,
+		HasContentHeader: m.currentFilePath != "",
+	}
+
+	if layout.IsFullscreen {
+		// Fullscreen mode: use most of the terminal width
+		layout.ViewportWidth = layout.TerminalWidth - FullscreenBuffer
+
+		if layout.HasContentHeader {
+			layout.ViewportHeight = layout.TerminalHeight - HelpTextHeight - ContentHeaderHeight
+		} else {
+			layout.ViewportHeight = layout.TerminalHeight - HelpTextHeight
+		}
+	} else {
+		// Normal mode: split into left and right panes
+		availableHeight := layout.TerminalHeight - HelpTextHeight
+
+		// Calculate left pane dimensions
+		leftPaneRenderedWidth := min(MaxLeftPaneWidth, layout.TerminalWidth/4)
+		layout.LeftPaneWidth = leftPaneRenderedWidth - BorderWidth + 1 // Add 1 to fix width issue
+		layout.LeftPaneHeight = availableHeight - BorderWidth          // Subtract border height since lipgloss adds it
+		layout.ListWidth = layout.LeftPaneWidth - BorderWidth
+		layout.ListHeight = layout.LeftPaneHeight - BorderWidth
+
+		// Calculate right pane dimensions
+		layout.RightPaneWidth = layout.TerminalWidth - leftPaneRenderedWidth - PaneSpacing - BorderWidth + 1 // Add 1 base width fix
+		layout.RightPaneHeight = availableHeight - BorderWidth                                               // Subtract border height since lipgloss adds it
+
+		// Calculate viewport dimensions within right pane
+		layout.ViewportWidth = layout.RightPaneWidth - BorderWidth
+
+		if layout.HasContentHeader {
+			layout.ViewportHeight = layout.RightPaneHeight - ContentHeaderHeight + 1
+		} else {
+			layout.ViewportHeight = layout.RightPaneHeight - BorderWidth
+		}
+	}
+
+	return layout
+}
+
 // Pane represents which pane is currently active or being hovered
 type Pane int
 
@@ -65,6 +155,7 @@ type Model struct {
 	markdownRenderer *glamour.TermRenderer
 	showLineNumbers  bool
 	currentFilePath  string
+	layout           Layout // Consolidated layout calculations
 }
 
 // Initialize the model
@@ -111,6 +202,7 @@ func initialModel() Model {
 		markdownRenderer: markdownRenderer,
 		showLineNumbers:  true,
 		currentFilePath:  "",
+		layout:           Layout{}, // Layout will be calculated on first window resize
 	}
 }
 
@@ -195,40 +287,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		helpHeight := 1
+		// Calculate layout dimensions using consolidated system
+		m.layout = m.CalculateLayout()
 
-		if m.isFullscreen {
-			// In fullscreen mode, use most of the terminal width
-			m.viewport.Width = m.width - 4 // Small buffer for terminal rendering
-			debugLog("Fullscreen mode - Terminal width: %d, Viewport width set to: %d", m.width, m.viewport.Width)
-			if m.currentFilePath != "" {
-				// Account for help text + content header (3 lines)
-				m.viewport.Height = m.height - helpHeight - 3 // 3 for header
-			} else {
-				// Just account for help text
-				m.viewport.Height = m.height - helpHeight + 1
-			}
-		} else {
-			// Calculate pane widths for normal mode
-			leftWidth := min(40, m.width/4)
-			rightWidth := m.width - leftWidth - 2 // Account for spacing between panes
-			paneHeight := m.height - helpHeight
+		// Update list size
+		m.list.SetWidth(m.layout.ListWidth)
+		m.list.SetHeight(m.layout.ListHeight)
 
-			// Update list size
-			m.list.SetWidth(leftWidth - 2) // Account for border
-			m.list.SetHeight(paneHeight - 2)
+		// Update viewport size
+		m.viewport.Width = m.layout.ViewportWidth
+		m.viewport.Height = m.layout.ViewportHeight
 
-			// Update viewport size based on whether we have a header
-			if m.currentFilePath != "" {
-				// With header: account for border (2px) + padding (2px)
-				m.viewport.Width = rightWidth - 4  // Account for border (2px) + padding (2px)
-				m.viewport.Height = paneHeight - 3 // Account for border + padding + header
-			} else {
-				// Without header: normal calculation
-				m.viewport.Width = rightWidth - 4  // Account for border (2px) + padding (2px)
-				m.viewport.Height = paneHeight - 4 // Account for border (2px) + padding (2px)
-			}
-		}
+		debugLog("Layout calculated - Terminal: %dx%d, Viewport: %dx%d, Fullscreen: %v",
+			m.layout.TerminalWidth, m.layout.TerminalHeight,
+			m.layout.ViewportWidth, m.layout.ViewportHeight,
+			m.layout.IsFullscreen)
 
 		// Re-render current file content if viewport width changed
 		if m.currentFilePath != "" {
@@ -257,19 +330,10 @@ func (m Model) handleNavigatorMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.isFullscreen {
 			// Exit fullscreen mode
 			m.isFullscreen = false
-			// Reset viewport dimensions to normal pane size
-			helpHeight := 1
-			leftWidth := min(40, m.width/4)
-			rightWidth := m.width - leftWidth - 2
-			paneHeight := m.height - helpHeight
-
-			if m.currentFilePath != "" {
-				m.viewport.Width = rightWidth - 4
-				m.viewport.Height = paneHeight - 3
-			} else {
-				m.viewport.Width = rightWidth - 4
-				m.viewport.Height = paneHeight - 4
-			}
+			// Recalculate layout for normal mode
+			m.layout = m.CalculateLayout()
+			m.viewport.Width = m.layout.ViewportWidth
+			m.viewport.Height = m.layout.ViewportHeight
 			debugLog("ESC exiting fullscreen - Setting viewport width to: %d", m.viewport.Width)
 			// Re-render the current file content with the new viewport width
 			if m.currentFilePath != "" {
@@ -299,32 +363,11 @@ func (m Model) handleNavigatorMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.focusedPane == ContentPane {
 			m.isFullscreen = !m.isFullscreen
 			debugLog("Fullscreen toggled to: %v", m.isFullscreen)
-			// Update viewport dimensions based on fullscreen mode
-			helpHeight := 1
-			if m.isFullscreen {
-				// Entering fullscreen mode
-				m.viewport.Width = m.width - 4 // Small buffer for terminal rendering
-				debugLog("Fullscreen toggle - Terminal width: %d, Setting viewport width to: %d", m.width, m.viewport.Width)
-				if m.currentFilePath != "" {
-					m.viewport.Height = m.height - helpHeight - 3 // 3 for header
-				} else {
-					m.viewport.Height = m.height - helpHeight + 1
-				}
-			} else {
-				// Exiting fullscreen mode - reset to normal pane dimensions
-				leftWidth := min(40, m.width/4)
-				rightWidth := m.width - leftWidth - 2
-				paneHeight := m.height - helpHeight
-
-				if m.currentFilePath != "" {
-					m.viewport.Width = rightWidth - 4
-					m.viewport.Height = paneHeight - 3
-				} else {
-					m.viewport.Width = rightWidth - 4
-					m.viewport.Height = paneHeight - 4
-				}
-				debugLog("Exiting fullscreen - Setting viewport width to: %d", m.viewport.Width)
-			}
+			// Recalculate layout for new fullscreen state
+			m.layout = m.CalculateLayout()
+			m.viewport.Width = m.layout.ViewportWidth
+			m.viewport.Height = m.layout.ViewportHeight
+			debugLog("Fullscreen toggle - Setting viewport width to: %d", m.viewport.Width)
 			// Re-render the current file content with the new viewport width
 			if m.currentFilePath != "" {
 				return m.rerenderCurrentFile()
@@ -398,6 +441,12 @@ func (m Model) goToPreviousDirectory() (tea.Model, tea.Cmd) {
 	m.list.Select(0)
 	m.viewport.SetContent("Select a file to view its content")
 	m.fileContent = ""
+	m.currentFilePath = ""
+
+	// Recalculate layout since we cleared the current file (affects header display)
+	m.layout = m.CalculateLayout()
+	m.viewport.Width = m.layout.ViewportWidth
+	m.viewport.Height = m.layout.ViewportHeight
 
 	return m, nil
 }
@@ -415,7 +464,7 @@ func (m Model) rerenderCurrentFile() (tea.Model, tea.Cmd) {
 		rawContent := string(content)
 		filename := filepath.Base(m.currentFilePath)
 
-		debugLog("rerenderCurrentFile - Viewport width: %d, Fullscreen: %v", m.viewport.Width, m.isFullscreen)
+		debugLog("rerenderCurrentFile - Viewport width: %d, Fullscreen: %v", m.layout.ViewportWidth, m.layout.IsFullscreen)
 
 		if isMarkdownFile(filename) {
 			// Render markdown with Glamour (no line numbers, no manual wrapping)
@@ -430,7 +479,7 @@ func (m Model) rerenderCurrentFile() (tea.Model, tea.Cmd) {
 			}
 
 			// Step 2: Wrap the final content
-			wrapWidth := m.viewport.Width
+			wrapWidth := m.layout.ViewportWidth
 			if wrapWidth > 0 {
 				m.fileContent = wordwrap.String(contentWithLineNumbers, wrapWidth)
 			} else {
@@ -470,9 +519,19 @@ func (m Model) handleFileSelection() (tea.Model, tea.Cmd) {
 		m.viewport.SetContent("Select a file to view its content")
 		m.fileContent = ""
 		m.currentFilePath = ""
+
+		// Recalculate layout since we cleared the current file (affects header display)
+		m.layout = m.CalculateLayout()
+		m.viewport.Width = m.layout.ViewportWidth
+		m.viewport.Height = m.layout.ViewportHeight
 	} else {
 		// Store current file path
 		m.currentFilePath = fileItem.path
+
+		// Recalculate layout since we now have a file (affects header display)
+		m.layout = m.CalculateLayout()
+		m.viewport.Width = m.layout.ViewportWidth
+		m.viewport.Height = m.layout.ViewportHeight
 
 		// Read file content
 		content, err := os.ReadFile(fileItem.path)
@@ -482,7 +541,7 @@ func (m Model) handleFileSelection() (tea.Model, tea.Cmd) {
 			rawContent := string(content)
 			filename := filepath.Base(fileItem.path)
 
-			debugLog("handleFileSelection - Viewport width: %d", m.viewport.Width)
+			debugLog("handleFileSelection - Viewport width: %d", m.layout.ViewportWidth)
 
 			if isMarkdownFile(filename) {
 				// Render markdown with Glamour (no line numbers, no manual wrapping)
@@ -497,7 +556,7 @@ func (m Model) handleFileSelection() (tea.Model, tea.Cmd) {
 				}
 
 				// Step 2: Wrap the final content
-				wrapWidth := m.viewport.Width
+				wrapWidth := m.layout.ViewportWidth
 				if wrapWidth > 0 {
 					m.fileContent = wordwrap.String(contentWithLineNumbers, wrapWidth)
 				} else {
@@ -586,13 +645,12 @@ func (m Model) View() string {
 
 	// Generate help text
 	helpText := m.getHelpText()
-	helpHeight := 2 // Help text line + padding line
 
 	// Handle fullscreen mode for content pane
-	if m.isFullscreen {
-		debugLog("Fullscreen rendering - Terminal width: %d, Viewport width: %d", m.width, m.viewport.Width)
+	if m.layout.IsFullscreen {
+		debugLog("Fullscreen rendering - Terminal width: %d, Viewport width: %d", m.layout.TerminalWidth, m.layout.ViewportWidth)
 
-		contentHeader := m.getContentHeaderViewFullscreen(m.width)
+		contentHeader := m.getContentHeaderViewFullscreen(m.layout.TerminalWidth)
 		if contentHeader != "" {
 			return helpText + "\n" + contentHeader + "\n" + m.viewport.View()
 		} else {
@@ -600,10 +658,7 @@ func (m Model) View() string {
 		}
 	}
 
-	// Calculate pane widths for normal mode
-	leftWidth := min(40, m.width/4)
-	rightWidth := m.width - leftWidth - 2 // Account for spacing between panes
-	paneHeight := m.height - helpHeight
+	// Use calculated layout dimensions for normal mode
 
 	// Style the left pane (navigator)
 	var leftStyle lipgloss.Style
@@ -627,8 +682,8 @@ func (m Model) View() string {
 
 	// Create the panes
 	leftPane := leftStyle.
-		Width(leftWidth).
-		Height(paneHeight - 2).
+		Width(m.layout.LeftPaneWidth).
+		Height(m.layout.LeftPaneHeight).
 		Render(m.list.View())
 
 	// Determine border color for content header
@@ -643,9 +698,9 @@ func (m Model) View() string {
 
 	// Create content pane manually with integrated header border
 	var rightPane string
-	if m.currentFilePath != "" {
+	if m.layout.HasContentHeader {
 		// Create header as top border
-		contentHeader := m.getContentHeaderView(rightWidth-2, headerBorderColor)
+		contentHeader := m.getContentHeaderView(m.layout.RightPaneWidth, headerBorderColor)
 
 		// Create sides and bottom border with proper border style
 		b := lipgloss.RoundedBorder()
@@ -656,18 +711,17 @@ func (m Model) View() string {
 		borderStyle := lipgloss.NewStyle().
 			BorderStyle(b).
 			BorderForeground(headerBorderColor).
-			Width(rightWidth - 2).
-			Height(paneHeight - 4) // Account for header + 2 extra
-			// Padding(1)
+			Width(m.layout.RightPaneWidth).
+			Height(m.layout.ViewportHeight) // Use viewport height directly - it's already calculated correctly
 
 		contentBody := borderStyle.Render(m.viewport.View())
 		rightPane = contentHeader + contentBody // no newline as contentBody already has a newline
 	} else {
 		// No header, use normal border
 		rightPane = rightStyle.
-			Width(rightWidth - 2).
-			Height(paneHeight - 2).
-			Padding(1).
+			Width(m.layout.RightPaneWidth).
+			Height(m.layout.RightPaneHeight).
+			Padding(ContentPadding).
 			Render(m.viewport.View())
 	}
 
@@ -701,10 +755,10 @@ func isMarkdownFile(filename string) bool {
 // renderMarkdown renders markdown content using Glamour with proper width
 func (m Model) renderMarkdown(content string) string {
 	// Create a new renderer with the current viewport width for proper wrapping
-	debugLog("renderMarkdown - Using viewport width: %d for markdown rendering", m.viewport.Width)
+	debugLog("renderMarkdown - Using viewport width: %d for markdown rendering", m.layout.ViewportWidth)
 	renderer, err := glamour.NewTermRenderer(
 		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(m.viewport.Width),
+		glamour.WithWordWrap(m.layout.ViewportWidth),
 	)
 	if err != nil {
 		// Fall back to raw content if rendering fails
