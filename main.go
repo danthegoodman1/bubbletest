@@ -57,8 +57,9 @@ type Model struct {
 	width            int
 	height           int
 	currentDir       string
-	directoryHistory []string // Stack of previous directories
+	directoryHistory []string
 	fileContent      string
+	isFullscreen     bool
 }
 
 // Initialize the model
@@ -92,6 +93,7 @@ func initialModel() Model {
 		currentDir:       currentDir,
 		directoryHistory: []string{},
 		fileContent:      "",
+		isFullscreen:     false,
 	}
 }
 
@@ -162,17 +164,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		// Calculate pane widths
-		leftWidth := min(40, m.width/4)
-		rightWidth := m.width - leftWidth - 4 // Account for borders
+		if m.isFullscreen {
+			// In fullscreen mode, the content pane takes the full screen
+			m.viewport.Width = m.width
+			m.viewport.Height = m.height
+		} else {
+			// Calculate pane widths for normal mode
+			leftWidth := min(40, m.width/4)
+			rightWidth := m.width - leftWidth - 4 // Account for borders
 
-		// Update list size
-		m.list.SetWidth(leftWidth - 2) // Account for border
-		m.list.SetHeight(m.height - 2)
+			// Update list size
+			m.list.SetWidth(leftWidth - 2) // Account for border
+			m.list.SetHeight(m.height - 2)
 
-		// Update viewport size
-		m.viewport.Width = rightWidth - 4 // Account for border (2px) + padding (2px)
-		m.viewport.Height = m.height - 4  // Account for border (2px) + padding (2px)
+			// Update viewport size
+			m.viewport.Width = rightWidth - 4 // Account for border (2px) + padding (2px)
+			m.viewport.Height = m.height - 4  // Account for border (2px) + padding (2px)
+		}
 
 		return m, nil
 
@@ -193,8 +201,20 @@ func (m Model) handleNavigatorMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 	case "esc":
+		if m.isFullscreen {
+			// Exit fullscreen mode
+			m.isFullscreen = false
+			return m, nil
+		}
+		// Enter pane selection mode
 		m.mode = PaneSelectionMode
 		m.selectedPane = m.focusedPane
+		return m, nil
+	case "f":
+		// Toggle fullscreen only for content pane when focused
+		if m.focusedPane == ContentPane {
+			m.isFullscreen = !m.isFullscreen
+		}
 		return m, nil
 	case "z":
 		if m.focusedPane == NavigatorPane {
@@ -314,7 +334,12 @@ func (m Model) View() string {
 		return "Loading..."
 	}
 
-	// Calculate pane widths
+	// Handle fullscreen mode for content pane
+	if m.isFullscreen {
+		return m.viewport.View()
+	}
+
+	// Calculate pane widths for normal mode
 	leftWidth := min(40, m.width/4)
 	rightWidth := m.width - leftWidth - 4 // Account for borders
 
