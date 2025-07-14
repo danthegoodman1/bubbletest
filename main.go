@@ -60,6 +60,7 @@ type Model struct {
 	directoryHistory []string
 	fileContent      string
 	isFullscreen     bool
+	markdownRenderer *glamour.TermRenderer
 }
 
 // Initialize the model
@@ -84,6 +85,15 @@ func initialModel() Model {
 	vp := viewport.New(0, 0)
 	vp.SetContent("Select a file to view its content")
 
+	// Initialize markdown renderer
+	markdownRenderer, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(100), // Fixed reasonable width
+	)
+	if err != nil {
+		markdownRenderer = nil // Fall back to no rendering if creation fails
+	}
+
 	return Model{
 		list:             l,
 		viewport:         vp,
@@ -94,6 +104,7 @@ func initialModel() Model {
 		directoryHistory: []string{},
 		fileContent:      "",
 		isFullscreen:     false,
+		markdownRenderer: markdownRenderer,
 	}
 }
 
@@ -316,7 +327,7 @@ func (m Model) handleFileSelection() (tea.Model, tea.Cmd) {
 			rawContent := string(content)
 			if isMarkdownFile(fileItem.name) {
 				// Render markdown with Glamour
-				m.fileContent = renderMarkdown(rawContent, m.viewport.Width)
+				m.fileContent = m.renderMarkdown(rawContent)
 			} else {
 				// Add line numbers for non-markdown files
 				m.fileContent = addLineNumbers(rawContent)
@@ -417,18 +428,14 @@ func isMarkdownFile(filename string) bool {
 	return ext == ".md" || ext == ".markdown"
 }
 
-// renderMarkdown renders markdown content using Glamour
-func renderMarkdown(content string, width int) string {
-	// Create a custom renderer for the terminal
-	r, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(width),
-	)
-	if err != nil {
-		return content // Fall back to raw content if rendering fails
+// renderMarkdown renders markdown content using the pre-created Glamour renderer
+func (m Model) renderMarkdown(content string) string {
+	if m.markdownRenderer == nil {
+		// Fall back to raw content if no renderer is available
+		return content
 	}
 
-	rendered, err := r.Render(content)
+	rendered, err := m.markdownRenderer.Render(content)
 	if err != nil {
 		return content // Fall back to raw content if rendering fails
 	}
