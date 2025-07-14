@@ -198,8 +198,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.isFullscreen {
 			m.viewport.Width = m.width
 			if m.currentFilePath != "" {
-				// Account for help text + content header (2 lines)
-				m.viewport.Height = m.height - helpHeight - 2
+				// Account for help text + content header (3 lines)
+				m.viewport.Height = m.height - helpHeight - 3 // 3 for header
 			} else {
 				// Just account for help text
 				m.viewport.Height = m.height - helpHeight + 1
@@ -221,7 +221,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.currentFilePath != "" {
 				// With header: account for header height and make width 4 characters shorter
 				m.viewport.Width = rightWidth - 8  // Account for border (2px) + padding (2px) + 4 extra for file
-				m.viewport.Height = paneHeight - 7 // Account for border + padding + header + 2 extra
+				m.viewport.Height = paneHeight - 3 // Account for border + padding + header
 			} else {
 				// Without header: normal calculation
 				m.viewport.Width = rightWidth - 4  // Account for border (2px) + padding (2px)
@@ -274,6 +274,16 @@ func (m Model) handleNavigatorMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Toggle fullscreen only for content pane when focused
 		if m.focusedPane == ContentPane {
 			m.isFullscreen = !m.isFullscreen
+			// Update viewport dimensions for fullscreen mode
+			helpHeight := 1
+			if m.isFullscreen {
+				m.viewport.Width = m.width
+				if m.currentFilePath != "" {
+					m.viewport.Height = m.height - helpHeight - 3 // 3 for header
+				} else {
+					m.viewport.Height = m.height - helpHeight + 1
+				}
+			}
 		}
 		return m, nil
 	case "z":
@@ -474,15 +484,17 @@ func (m Model) getContentHeaderViewFullscreen(width int) string {
 	titleStyle := func() lipgloss.Style {
 		b := lipgloss.RoundedBorder()
 		b.Right = "├"
+		b.Left = "┤"
 		return lipgloss.NewStyle().BorderStyle(b).Padding(0, 1)
 	}()
 
 	titleRendered := titleStyle.Render(title)
 	// Style the line with the same border color
 	lineStyle := lipgloss.NewStyle()
-	line := lineStyle.Render(strings.Repeat("─", max(0, width-lipgloss.Width(titleRendered))-1))
+	line := lineStyle.Render(strings.Repeat("─", max(0, width-lipgloss.Width(titleRendered))-3))
 	return lipgloss.JoinHorizontal(
 		lipgloss.Center,
+		lineStyle.Render(strings.Repeat("─", 2)),
 		titleRendered,
 		line,
 	)
@@ -570,7 +582,6 @@ func (m Model) View() string {
 			Height(paneHeight - 4) // Account for header + 2 extra
 			// Padding(1)
 
-		m.viewport.Height = paneHeight - 3
 		contentBody := borderStyle.Render(m.viewport.View())
 		rightPane = contentHeader + contentBody // no newline as contentBody already has a newline
 	} else {
